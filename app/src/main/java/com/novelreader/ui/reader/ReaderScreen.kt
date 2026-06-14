@@ -2,6 +2,9 @@ package com.novelreader.ui.reader
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -143,13 +146,8 @@ fun ReaderScreen(
                                 .fillMaxSize()
                                 .padding(16.dp)
                                 .pointerInput(Unit) {
-                                    detectTapGestures { offset ->
-                                        val screenWidth = size.width.toFloat()
-                                        when {
-                                            offset.x < screenWidth / 3 -> viewModel.goToPreviousChapter()
-                                            offset.x > screenWidth * 2 / 3 -> viewModel.goToNextChapter()
-                                            else -> viewModel.toggleMenu()
-                                        }
+                                    detectTapGestures {
+                                        viewModel.toggleMenu()
                                     }
                                 }
                         ) {
@@ -195,16 +193,27 @@ fun ReaderScreen(
                             val req = flipRequest ?: return@LaunchedEffect
                             previousPageParagraphs = req.oldPageContent
                             animatedOldPageX.snapTo(req.oldPageStart)
-                            coroutineScope {
-                                launch {
-                                    animatedOldPageX.animateTo(req.oldPageTarget, tween(250))
-                                    previousPageParagraphs = emptyList()
+                            if (settings.flipAnimation) {
+                                coroutineScope {
+                                    launch {
+                                        animatedOldPageX.animateTo(
+                                            req.oldPageTarget,
+                                            tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                                        )
+                                    }
+                                    launch {
+                                        animatedOffsetX.snapTo(req.newPageStart)
+                                        animatedOffsetX.animateTo(
+                                            0f,
+                                            tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                                        )
+                                    }
                                 }
-                                launch {
-                                    animatedOffsetX.snapTo(req.newPageStart)
-                                    animatedOffsetX.animateTo(0f, tween(250))
-                                }
+                            } else {
+                                animatedOldPageX.snapTo(req.oldPageTarget)
+                                animatedOffsetX.snapTo(0f)
                             }
+                            previousPageParagraphs = emptyList()
                             flipRequest = null
                         }
 
@@ -212,7 +221,13 @@ fun ReaderScreen(
                         LaunchedEffect(dragTarget) {
                             if (dragTarget.isNaN()) return@LaunchedEffect
                             if (dragTarget == 0f) {
-                                animatedOffsetX.animateTo(0f, tween(200))
+                                animatedOffsetX.animateTo(
+                                    0f,
+                                    spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
+                                )
                             } else {
                                 animatedOffsetX.snapTo(dragTarget)
                             }
@@ -262,6 +277,8 @@ fun ReaderScreen(
                                         .fillMaxSize()
                                         .graphicsLayer {
                                             translationX = animatedOldPageX.value
+                                            val progress = (kotlin.math.abs(animatedOldPageX.value) / (size.width * 0.4f)).coerceIn(0f, 1f)
+                                            alpha = 1f - progress * 0.5f
                                         }
                                         .padding(16.dp)
                                 ) {
@@ -308,6 +325,7 @@ fun ReaderScreen(
                                                 val down = awaitFirstDown(requireUnconsumed = false)
                                                 val startX = down.position.x
                                                 var totalDragX = 0f
+                                                var totalDragY = 0f
                                                 var isDrag = false
 
                                                 while (true) {
@@ -326,7 +344,7 @@ fun ReaderScreen(
                                                                         viewModel.updateReadPosition(currentPage)
                                                                         flipRequest = FlipAnimRequest(
                                                                             oldPageStart = 0f,
-                                                                            oldPageTarget = screenWidth,
+                                                                            oldPageTarget = screenWidth * 0.4f,
                                                                             newPageStart = -screenWidth,
                                                                             oldPageContent = displayParagraphs
                                                                         )
@@ -340,7 +358,7 @@ fun ReaderScreen(
                                                                         viewModel.updateReadPosition(currentPage)
                                                                         flipRequest = FlipAnimRequest(
                                                                             oldPageStart = 0f,
-                                                                            oldPageTarget = -screenWidth,
+                                                                            oldPageTarget = -screenWidth * 0.4f,
                                                                             newPageStart = screenWidth,
                                                                             oldPageContent = displayParagraphs
                                                                         )
@@ -350,7 +368,7 @@ fun ReaderScreen(
                                                             }
                                                         } else {
                                                             // 拖拽结束，根据最终位移量决定是否翻页
-                                                            val threshold = size.width / 3f
+                                                            val threshold = size.width * settings.flipSensitivity
                                                             val currentOffset = animatedOffsetX.value
                                                             when {
                                                                 currentOffset < -threshold && currentPage < pages.size - 1 -> {
@@ -360,7 +378,7 @@ fun ReaderScreen(
                                                                     viewModel.updateReadPosition(currentPage)
                                                                     flipRequest = FlipAnimRequest(
                                                                         oldPageStart = currentOffset,
-                                                                        oldPageTarget = -size.width.toFloat(),
+                                                                        oldPageTarget = -size.width * 0.4f,
                                                                         newPageStart = currentOffset,
                                                                         oldPageContent = displayParagraphs
                                                                     )
@@ -372,7 +390,7 @@ fun ReaderScreen(
                                                                     viewModel.updateReadPosition(currentPage)
                                                                     flipRequest = FlipAnimRequest(
                                                                         oldPageStart = currentOffset,
-                                                                        oldPageTarget = size.width.toFloat(),
+                                                                        oldPageTarget = size.width * 0.4f,
                                                                         newPageStart = currentOffset,
                                                                         oldPageContent = displayParagraphs
                                                                     )
@@ -386,8 +404,13 @@ fun ReaderScreen(
                                                         break
                                                     }
                                                     val dragX = change.position.x - change.previousPosition.x
+                                                    val dragY = change.position.y - change.previousPosition.y
                                                     totalDragX += dragX
-                                                    if (kotlin.math.abs(totalDragX) > 10f) isDrag = true
+                                                    totalDragY += dragY
+                                                    if (kotlin.math.abs(totalDragX) > 10f
+                                                        && kotlin.math.abs(totalDragX) > kotlin.math.abs(totalDragY) * 1.5f) {
+                                                        isDrag = true
+                                                    }
                                                     if (isDrag) {
                                                         change.consume()
                                                         dragTarget = (animatedOffsetX.value + dragX).coerceIn(
@@ -709,10 +732,16 @@ fun TOCDialog(
                     // 可拖拽滚动条（右侧）
                     if (listState.layoutInfo.totalItemsCount > 5) {
                         val totalItems = listState.layoutInfo.totalItemsCount
-                        val visibleItems = listState.layoutInfo.visibleItemsInfo.size
-                        val thumbHeightFraction = (visibleItems.toFloat() / totalItems).coerceIn(0.15f, 1f)
+                        val thumbHeightFraction by remember {
+                            derivedStateOf {
+                                val visible = listState.layoutInfo.visibleItemsInfo.size
+                                val total = listState.layoutInfo.totalItemsCount
+                                if (total == 0) 1f else (visible.toFloat() / total).coerceIn(0.15f, 1f)
+                            }
+                        }
 
                         var scrollFraction by remember { mutableFloatStateOf(0f) }
+                        var dragAccumulatedY by remember { mutableFloatStateOf(0f) }
 
                         LaunchedEffect(listState) {
                             snapshotFlow {
@@ -723,9 +752,10 @@ fun TOCDialog(
                                 } else {
                                     100f
                                 }
+                                val visibleCount = listState.layoutInfo.visibleItemsInfo.size
                                 val scrollPosition = firstVisible + firstVisibleOffset / itemHeight
-                                if (totalItems <= 1) 0f
-                                else (scrollPosition / (totalItems - 1)).coerceIn(0f, 1f)
+                                val maxScroll = (totalItems - visibleCount).coerceAtLeast(1)
+                                (scrollPosition / maxScroll).coerceIn(0f, 1f)
                             }.collect { fraction ->
                                 scrollFraction = fraction
                             }
@@ -734,11 +764,12 @@ fun TOCDialog(
                         Box(
                             modifier = Modifier
                                 .fillMaxHeight()
-                                .width(30.dp)
+                                .width(44.dp)
                                 .align(Alignment.CenterEnd)
                                 .pointerInput(totalItems) {
                                     detectVerticalDragGestures(
                                         onDragStart = { offset ->
+                                            dragAccumulatedY = offset.y
                                             val touchFraction = (offset.y / size.height).coerceIn(0f, 1f)
                                             val targetIndex = (touchFraction * (totalItems - 1)).toInt().coerceIn(0, totalItems - 1)
                                             coroutineScope.launch {
@@ -748,18 +779,11 @@ fun TOCDialog(
                                         onDragEnd = { },
                                         onVerticalDrag = { change, dragAmount ->
                                             change.consume()
-                                            val itemHeight = if (listState.layoutInfo.visibleItemsInfo.isNotEmpty()) {
-                                                listState.layoutInfo.visibleItemsInfo.first().size.toFloat()
-                                            } else {
-                                                100f
-                                            }
-                                            val itemsToScroll = (-dragAmount / itemHeight).toInt()
-                                            if (itemsToScroll != 0) {
-                                                val currentIndex = listState.firstVisibleItemIndex
-                                                val targetIndex = (currentIndex + itemsToScroll).coerceIn(0, totalItems - 1)
-                                                coroutineScope.launch {
-                                                    listState.scrollToItem(targetIndex)
-                                                }
+                                            dragAccumulatedY += dragAmount
+                                            val fraction = (dragAccumulatedY / size.height).coerceIn(0f, 1f)
+                                            val targetIndex = (fraction * (totalItems - 1)).toInt().coerceIn(0, totalItems - 1)
+                                            coroutineScope.launch {
+                                                listState.scrollToItem(targetIndex)
                                             }
                                         }
                                     )
@@ -769,7 +793,7 @@ fun TOCDialog(
                             Box(
                                 modifier = Modifier
                                     .fillMaxHeight()
-                                    .width(4.dp)
+                                    .width(3.dp)
                                     .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f), RoundedCornerShape(2.dp))
                                     .align(Alignment.Center)
                             )
@@ -777,7 +801,7 @@ fun TOCDialog(
                             Box(
                                 modifier = Modifier
                                     .fillMaxHeight(thumbHeightFraction)
-                                    .width(8.dp)
+                                    .width(6.dp)
                                     .background(
                                         MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                                         shape = RoundedCornerShape(4.dp)
@@ -993,6 +1017,47 @@ fun SettingsDialog(
                             label = { Text(mode.displayName) },
                             modifier = Modifier.weight(1f)
                         )
+                    }
+                }
+
+                if (settings.pageMode == PageMode.HORIZONTAL_PAGE) {
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // 翻页动画开关
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("翻页动画")
+                        Switch(
+                            checked = settings.flipAnimation,
+                            onCheckedChange = { onSettingsChange(settings.copy(flipAnimation = it)) }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // 翻页灵敏度
+                    val sensitivityLabel = when {
+                        settings.flipSensitivity < 0.22f -> "极灵敏"
+                        settings.flipSensitivity < 0.38f -> "适中"
+                        else -> "迟钝"
+                    }
+                    Text("翻页灵敏度：$sensitivityLabel")
+                    Slider(
+                        value = settings.flipSensitivity,
+                        onValueChange = { onSettingsChange(settings.copy(flipSensitivity = it)) },
+                        valueRange = 0.15f..0.5f,
+                        steps = 6,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("极灵敏", fontSize = 11.sp, color = Color.Gray)
+                        Text("迟钝", fontSize = 11.sp, color = Color.Gray)
                     }
                 }
 
