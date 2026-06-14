@@ -16,6 +16,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.RandomAccessFile
 
 /**
  * 全文内容加载状态
@@ -26,10 +30,6 @@ sealed class FullContentState {
     data class Ready(val content: String) : FullContentState()
     object Error : FullContentState()
 }
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.RandomAccessFile
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
     private val database = NovelDatabase.getDatabase(application)
