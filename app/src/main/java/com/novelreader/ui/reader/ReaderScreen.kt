@@ -179,6 +179,45 @@ fun ReaderScreen(
                         // 旧页动画（推出屏幕）
                         val animatedOldPageX = remember { Animatable(0f) }
 
+                        // 状态驱动的动画请求（避免在 awaitPointerEventScope 中调用 suspend 函数）
+                        data class FlipAnimRequest(
+                            val oldPageStart: Float,
+                            val oldPageTarget: Float,
+                            val newPageStart: Float,
+                            val oldPageContent: List<String>
+                        )
+                        var flipRequest by remember { mutableStateOf<FlipAnimRequest?>(null) }
+                        var dragTarget by remember { mutableFloatStateOf(Float.NaN) }
+
+                        // 翻页动画
+                        LaunchedEffect(flipRequest) {
+                            val req = flipRequest ?: return@LaunchedEffect
+                            previousPageParagraphs = req.oldPageContent
+                            animatedOldPageX.snapTo(req.oldPageStart)
+                            coroutineScope {
+                                launch {
+                                    animatedOldPageX.animateTo(req.oldPageTarget, tween(250))
+                                    previousPageParagraphs = emptyList()
+                                }
+                                launch {
+                                    animatedOffsetX.snapTo(req.newPageStart)
+                                    animatedOffsetX.animateTo(0f, tween(250))
+                                }
+                            }
+                            flipRequest = null
+                        }
+
+                        // 拖拽跟随 / 弹回动画
+                        LaunchedEffect(dragTarget) {
+                            if (dragTarget.isNaN()) return@LaunchedEffect
+                            if (dragTarget == 0f) {
+                                animatedOffsetX.animateTo(0f, tween(200))
+                            } else {
+                                animatedOffsetX.snapTo(dragTarget)
+                            }
+                            dragTarget = Float.NaN
+                        }
+
                         // 将段落分页（在 BoxWithConstraints 内按字符数分页）
                         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                             val availableHeightPx = constraints.maxHeight.toFloat()
@@ -281,51 +320,29 @@ fun ReaderScreen(
                                                                 startX < screenWidth / 3 -> {
                                                                     if (currentPage > 0) {
                                                                         // 点击翻上一页：旧页向右推出，新页从左侧推入
-                                                                        previousPageParagraphs = displayParagraphs
                                                                         flipDirection = -1
                                                                         currentPage--
                                                                         viewModel.updateReadPosition(currentPage)
-                                                                        launch {
-                                                                            animatedOldPageX.snapTo(0f)
-                                                                            coroutineScope {
-                                                                                launch {
-                                                                                    animatedOldPageX.animateTo(
-                                                                                        screenWidth,
-                                                                                        tween(250)
-                                                                                    )
-                                                                                    previousPageParagraphs = emptyList()
-                                                                                }
-                                                                                launch {
-                                                                                    animatedOffsetX.snapTo(-screenWidth)
-                                                                                    animatedOffsetX.animateTo(0f, tween(250))
-                                                                                }
-                                                                            }
-                                                                        }
+                                                                        flipRequest = FlipAnimRequest(
+                                                                            oldPageStart = 0f,
+                                                                            oldPageTarget = screenWidth,
+                                                                            newPageStart = -screenWidth,
+                                                                            oldPageContent = displayParagraphs
+                                                                        )
                                                                     }
                                                                 }
                                                                 startX > screenWidth * 2 / 3 -> {
                                                                     if (currentPage < pages.size - 1) {
                                                                         // 点击翻下一页：旧页向左推出，新页从右侧推入
-                                                                        previousPageParagraphs = displayParagraphs
                                                                         flipDirection = 1
                                                                         currentPage++
                                                                         viewModel.updateReadPosition(currentPage)
-                                                                        launch {
-                                                                            animatedOldPageX.snapTo(0f)
-                                                                            coroutineScope {
-                                                                                launch {
-                                                                                    animatedOldPageX.animateTo(
-                                                                                        -screenWidth,
-                                                                                        tween(250)
-                                                                                    )
-                                                                                    previousPageParagraphs = emptyList()
-                                                                                }
-                                                                                launch {
-                                                                                    animatedOffsetX.snapTo(screenWidth)
-                                                                                    animatedOffsetX.animateTo(0f, tween(250))
-                                                                                }
-                                                                            }
-                                                                        }
+                                                                        flipRequest = FlipAnimRequest(
+                                                                            oldPageStart = 0f,
+                                                                            oldPageTarget = -screenWidth,
+                                                                            newPageStart = screenWidth,
+                                                                            oldPageContent = displayParagraphs
+                                                                        )
                                                                     }
                                                                 }
                                                                 else -> viewModel.toggleMenu()
@@ -337,51 +354,31 @@ fun ReaderScreen(
                                                             when {
                                                                 currentOffset < -threshold && currentPage < pages.size - 1 -> {
                                                                     // 左滑翻下一页：旧页继续向左滑出，新页从当前位置归位中央
-                                                                    previousPageParagraphs = displayParagraphs
                                                                     flipDirection = 1
                                                                     currentPage++
                                                                     viewModel.updateReadPosition(currentPage)
-                                                                    launch {
-                                                                        animatedOldPageX.snapTo(currentOffset)
-                                                                        coroutineScope {
-                                                                            launch {
-                                                                                animatedOldPageX.animateTo(
-                                                                                    -size.width.toFloat(),
-                                                                                    tween(250)
-                                                                                )
-                                                                                previousPageParagraphs = emptyList()
-                                                                            }
-                                                                            launch {
-                                                                                animatedOffsetX.animateTo(0f, tween(250))
-                                                                            }
-                                                                        }
-                                                                    }
+                                                                    flipRequest = FlipAnimRequest(
+                                                                        oldPageStart = currentOffset,
+                                                                        oldPageTarget = -size.width.toFloat(),
+                                                                        newPageStart = currentOffset,
+                                                                        oldPageContent = displayParagraphs
+                                                                    )
                                                                 }
                                                                 currentOffset > threshold && currentPage > 0 -> {
                                                                     // 右滑翻上一页：旧页继续向右滑出，新页从当前位置归位中央
-                                                                    previousPageParagraphs = displayParagraphs
                                                                     flipDirection = -1
                                                                     currentPage--
                                                                     viewModel.updateReadPosition(currentPage)
-                                                                    launch {
-                                                                        animatedOldPageX.snapTo(currentOffset)
-                                                                        coroutineScope {
-                                                                            launch {
-                                                                                animatedOldPageX.animateTo(
-                                                                                    size.width.toFloat(),
-                                                                                    tween(250)
-                                                                                )
-                                                                                previousPageParagraphs = emptyList()
-                                                                            }
-                                                                            launch {
-                                                                                animatedOffsetX.animateTo(0f, tween(250))
-                                                                            }
-                                                                        }
-                                                                    }
+                                                                    flipRequest = FlipAnimRequest(
+                                                                        oldPageStart = currentOffset,
+                                                                        oldPageTarget = size.width.toFloat(),
+                                                                        newPageStart = currentOffset,
+                                                                        oldPageContent = displayParagraphs
+                                                                    )
                                                                 }
                                                                 else -> {
                                                                     // 不满足阈值：弹回中央
-                                                                    launch { animatedOffsetX.animateTo(0f, tween(200)) }
+                                                                    dragTarget = 0f
                                                                 }
                                                             }
                                                         }
@@ -392,14 +389,10 @@ fun ReaderScreen(
                                                     if (kotlin.math.abs(totalDragX) > 10f) isDrag = true
                                                     if (isDrag) {
                                                         change.consume()
-                                                        launch {
-                                                            animatedOffsetX.snapTo(
-                                                                (animatedOffsetX.value + dragX).coerceIn(
-                                                                    -size.width.toFloat(),
-                                                                    size.width.toFloat()
-                                                                )
-                                                            )
-                                                        }
+                                                        dragTarget = (animatedOffsetX.value + dragX).coerceIn(
+                                                            -size.width.toFloat(),
+                                                            size.width.toFloat()
+                                                        )
                                                     }
                                                 }
                                             }

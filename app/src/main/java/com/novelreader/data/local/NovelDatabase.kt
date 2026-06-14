@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.novelreader.data.model.Book
@@ -49,7 +50,11 @@ abstract class NovelDatabase : RoomDatabase() {
                     NovelDatabase::class.java,
                     "novel_database"
                 ).addMigrations(MIGRATION_1_2)
-                    .enableForeignKeyConstraints()
+                    .addCallback(object : RoomDatabase.Callback() {
+                        override fun onOpen(db: SupportSQLiteDatabase) {
+                            db.execSQL("PRAGMA foreign_keys = ON")
+                        }
+                    })
                     .build()
                 INSTANCE = instance
                 instance
