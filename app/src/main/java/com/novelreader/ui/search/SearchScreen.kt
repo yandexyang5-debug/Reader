@@ -19,7 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
@@ -54,8 +54,6 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novelreader.ui.reader.ReaderViewModel
-import com.novelreader.ui.theme.DarkBackground
-import com.novelreader.ui.theme.DarkCardBackground
 import kotlinx.coroutines.delay
 
 enum class SearchMode(val label: String) {
@@ -92,21 +90,21 @@ fun SearchScreen(
     val keywords = debouncedQuery.split("\\s+".toRegex()).filter { it.isNotBlank() }
 
     Scaffold(
-        containerColor = DarkBackground,
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = { Text("全文搜索", color = MaterialTheme.colorScheme.onPrimary) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            imageVector = Icons.Default.ArrowBack,
                             contentDescription = "返回",
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = DarkBackground
+                    containerColor = MaterialTheme.colorScheme.background
                 )
             )
         }
@@ -168,7 +166,7 @@ fun SearchScreen(
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = MaterialTheme.colorScheme.primary,
                             selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                            containerColor = DarkCardBackground,
+                            containerColor = MaterialTheme.colorScheme.surface,
                             labelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
                     )
@@ -258,7 +256,7 @@ private fun SearchResultCard(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = DarkCardBackground
+            containerColor = MaterialTheme.colorScheme.surface
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
