@@ -63,6 +63,7 @@ fun ReaderScreen(
     val isMenuVisible by viewModel.isMenuVisible.collectAsState()
     val isTOCVisible by viewModel.isTOCVisible.collectAsState()
     val isSearchVisible by viewModel.isSearchVisible.collectAsState()
+    val fullContentState by viewModel.fullContentState.collectAsState()
     val isSettingsVisible by viewModel.isSettingsVisible.collectAsState()
     val lastReadPosition by viewModel.lastReadPosition.collectAsState()
     val scrollToParagraph by viewModel.scrollToParagraph.collectAsState()
@@ -592,7 +593,7 @@ fun ReaderScreen(
     if (isSearchVisible) {
         SearchScreen(
             chapters = chapters,
-            fullContent = viewModel.fullContent,
+            fullContentState = fullContentState,
             onBackClick = { viewModel.hideSearch() },
             onResultClick = { chapterIndex, paragraphIndex ->
                 viewModel.goToChapterAndParagraph(chapterIndex, paragraphIndex)

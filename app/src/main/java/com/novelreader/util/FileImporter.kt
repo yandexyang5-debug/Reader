@@ -7,7 +7,9 @@ import com.novelreader.data.model.Chapter
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.nio.ByteBuffer
 import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 
 object FileImporter {
     /**
@@ -104,72 +106,45 @@ object FileImporter {
     }
 
     /**
-     * 检查是否是有效的UTF-8编码
+     * 验证字节是否为有效UTF-8编码
+     * 先做GBK字节模式快速排除，再用CharsetDecoder严格验证
      */
     private fun isValidUtf8(bytes: ByteArray): Boolean {
         var i = 0
-        var totalBytes = 0
-        var validBytes = 0
-
         while (i < bytes.size) {
             val b = bytes[i].toInt() and 0xFF
-
-            when {
-                // 单字节 (0xxxxxxx)
-                b <= 0x7F -> {
-                    totalBytes++
-                    validBytes++
-                    i++
-                }
-                // 双字节 (110xxxxx 10xxxxxx)
-                b in 0xC0..0xDF -> {
-                    if (i + 1 >= bytes.size) return false
+            if (b in 0x80..0xFF) {
+                // 高字节后必须紧跟UTF-8续接字节(0x80-0xBF)
+                // GBK尾字节范围0x40-0xFE，其中0xC0-0xFE不是UTF-8续接字节
+                if (i + 1 < bytes.size) {
                     val b2 = bytes[i + 1].toInt() and 0xFF
-                    if (b2 in 0x80..0xBF) {
-                        totalBytes += 2
-                        validBytes += 2
-                        i += 2
-                    } else {
+                    if (b2 < 0x80 || b2 > 0xBF) {
+                        // 高字节后跟非续接字节 → 不是UTF-8（很可能是GBK）
                         return false
                     }
                 }
-                // 三字节 (1110xxxx 10xxxxxx 10xxxxxx) - 中文常用
-                b in 0xE0..0xEF -> {
-                    if (i + 2 >= bytes.size) return false
-                    val b2 = bytes[i + 1].toInt() and 0xFF
-                    val b3 = bytes[i + 2].toInt() and 0xFF
-                    if (b2 in 0x80..0xBF && b3 in 0x80..0xBF) {
-                        totalBytes += 3
-                        validBytes += 3
-                        i += 3
-                    } else {
-                        return false
-                    }
+                // 跳过当前多字节序列
+                val len = when {
+                    b in 0xC0..0xDF -> 2
+                    b in 0xE0..0xEF -> 3
+                    b in 0xF0..0xF7 -> 4
+                    else -> return false // 0x80-0xBF 单独出现不是合法UTF-8起始字节
                 }
-                // 四字节 (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
-                b in 0xF0..0xF7 -> {
-                    if (i + 3 >= bytes.size) return false
-                    val b2 = bytes[i + 1].toInt() and 0xFF
-                    val b3 = bytes[i + 2].toInt() and 0xFF
-                    val b4 = bytes[i + 3].toInt() and 0xFF
-                    if (b2 in 0x80..0xBF && b3 in 0x80..0xBF && b4 in 0x80..0xBF) {
-                        totalBytes += 4
-                        validBytes += 4
-                        i += 4
-                    } else {
-                        return false
-                    }
-                }
-                else -> {
-                    // 无效的UTF-8字节
-                    return false
-                }
+                i += len
+            } else {
+                i++
             }
         }
-
-        // 如果大部分字节是有效的UTF-8，则认为是UTF-8
-        // 允许少量单字节ASCII混杂
-        return totalBytes == validBytes
+        // 快速检查通过后，用CharsetDecoder做严格验证
+        val decoder = Charsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+        return try {
+            decoder.decode(ByteBuffer.wrap(bytes))
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /**

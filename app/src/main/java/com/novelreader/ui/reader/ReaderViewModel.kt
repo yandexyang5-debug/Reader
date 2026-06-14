@@ -16,6 +16,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+
+/**
+ * 全文内容加载状态
+ */
+sealed class FullContentState {
+    object Idle : FullContentState()
+    object Loading : FullContentState()
+    data class Ready(val content: String) : FullContentState()
+    object Error : FullContentState()
+}
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -63,11 +73,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private val _scrollToParagraph = MutableStateFlow(-1)
     val scrollToParagraph: StateFlow<Int> = _scrollToParagraph.asStateFlow()
 
-    var fullContent: String = ""
-        private set
-
-    // 标记全文是否已加载，避免重复读取
-    private var fullContentLoaded = false
+    private val _fullContentState = MutableStateFlow<FullContentState>(FullContentState.Idle)
+    val fullContentState: StateFlow<FullContentState> = _fullContentState.asStateFlow()
 
     /**
      * 从SharedPreferences加载阅读设置
@@ -144,8 +151,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     _currentChapterContent.value = content
                     // 章节内容改变，全文缓存失效
-                    fullContent = ""
-                    fullContentLoaded = false
+                    _fullContentState.value = FullContentState.Idle
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -216,23 +222,26 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun showSearch() {
-        _isSearchVisible.value = true
         _isMenuVisible.value = false
-        // 懒加载全文：仅在打开搜索时读取
-        if (!fullContentLoaded) {
+        _isSearchVisible.value = true
+        // 懒加载全文：仅在未加载时读取
+        if (_fullContentState.value is FullContentState.Idle) {
+            _fullContentState.value = FullContentState.Loading
             viewModelScope.launch {
-                try {
+                _fullContentState.value = try {
                     val book = _currentBook.value ?: return@launch
                     val file = File(book.filePath)
                     if (file.exists()) {
-                        fullContent = withContext(Dispatchers.IO) {
+                        val content = withContext(Dispatchers.IO) {
                             file.readText(Charsets.UTF_8)
                         }
-                        fullContentLoaded = true
+                        FullContentState.Ready(content)
+                    } else {
+                        FullContentState.Error
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    fullContent = ""
+                    FullContentState.Error
                 }
             }
         }

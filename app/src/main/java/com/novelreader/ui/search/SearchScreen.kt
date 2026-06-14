@@ -23,6 +23,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novelreader.data.model.ReadingSettings
+import com.novelreader.ui.reader.FullContentState
 import com.novelreader.util.ChapterParser
 
 data class SearchResult(
@@ -41,7 +42,7 @@ enum class SearchMode {
 @Composable
 fun SearchScreen(
     chapters: List<com.novelreader.data.model.Chapter>,
-    fullContent: String,
+    fullContentState: FullContentState,
     onBackClick: () -> Unit,
     onResultClick: (chapterIndex: Int, paragraphIndex: Int) -> Unit
 ) {
@@ -56,6 +57,8 @@ fun SearchScreen(
             results = emptyList()
             return
         }
+        if (fullContentState !is FullContentState.Ready) return
+        val fullContent = fullContentState.content
 
         isSearching = true
         results = emptyList()
@@ -161,8 +164,34 @@ fun SearchScreen(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(8.dp)
+                shape = RoundedCornerShape(8.dp),
+                enabled = fullContentState is FullContentState.Ready
             )
+
+            // 全文加载状态提示
+            when (fullContentState) {
+                is FullContentState.Loading, is FullContentState.Idle -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("正在加载全文...", color = Color.Gray, fontSize = 14.sp)
+                    }
+                }
+                is FullContentState.Error -> {
+                    Text(
+                        text = "全文加载失败，请退出重试",
+                        color = Color.Red,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+                is FullContentState.Ready -> { /* 正常显示，无需提示 */ }
+            }
 
             // 搜索模式选择
             Row(
