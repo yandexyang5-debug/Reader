@@ -1,7 +1,7 @@
 package com.novelreader.ui.reader
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -10,6 +10,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -38,11 +39,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.novelreader.data.model.PageMode
 import com.novelreader.data.model.ReadingSettings
 import com.novelreader.ui.search.SearchScreen
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -74,21 +77,8 @@ fun ReaderScreen(
             .fillMaxSize()
             .background(Color(settings.backgroundColor))
     ) {
-        // 内容区域 - 根据翻页模式处理点击事件
-        val contentModifier = if (settings.pageMode == PageMode.HORIZONTAL_PAGE) {
-            // 左右翻页模式：不在此处处理点击，由翻页模块处理
-            Modifier.fillMaxSize()
-        } else {
-            // 上下滚屏模式：点击弹出菜单
-            Modifier
-                .fillMaxSize()
-                .clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() }
-                ) {
-                    viewModel.toggleMenu()
-                }
-        }
+        // 内容区域
+        val contentModifier = Modifier.fillMaxSize()
 
         Column(
             modifier = contentModifier
@@ -151,6 +141,16 @@ fun ReaderScreen(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(16.dp)
+                                .pointerInput(Unit) {
+                                    detectTapGestures { offset ->
+                                        val screenWidth = size.width.toFloat()
+                                        when {
+                                            offset.x < screenWidth / 3 -> viewModel.goToPreviousChapter()
+                                            offset.x > screenWidth * 2 / 3 -> viewModel.goToNextChapter()
+                                            else -> viewModel.toggleMenu()
+                                        }
+                                    }
+                                }
                         ) {
                             itemsIndexed(
                                 items = paragraphs,
@@ -171,43 +171,78 @@ fun ReaderScreen(
                     PageMode.HORIZONTAL_PAGE -> {
                         // 左右翻页模式
                         var currentPage by remember { mutableStateOf(lastReadPosition) }
-                        var offsetX by remember { mutableFloatStateOf(0f) }
+                        var previousPageParagraphs by remember { mutableStateOf<List<String>>(emptyList()) }
+                        var flipDirection by remember { mutableIntStateOf(0) } // 1=向左翻(下一页), -1=向右翻(上一页)
 
-                        // 计算每页显示的段落数
-                        val itemsPerPage = remember(settings.fontSize, settings.lineHeight) {
-                            val lineHeight = settings.fontSize * settings.lineHeight
-                            val estimatedLinesPerPage = (600f / lineHeight).toInt()
-                            estimatedLinesPerPage.coerceIn(5, 50)
-                        }
+                        // 新页动画（手指跟随 + 翻页归位）
+                        val animatedOffsetX = remember { Animatable(0f) }
+                        // 旧页动画（推出屏幕）
+                        val animatedOldPageX = remember { Animatable(0f) }
 
-                        // 将段落分页
-                        val pages = remember(paragraphs, itemsPerPage) {
-                            paragraphs.chunked(itemsPerPage)
-                        }
+                        // 将段落分页（在 BoxWithConstraints 内按字符数分页）
+                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                            val availableHeightPx = constraints.maxHeight.toFloat()
+                            val availableWidthPx = constraints.maxWidth.toFloat()
+                            val density = LocalDensity.current
+                            val charHeightPx = with(density) { (settings.fontSize * settings.lineHeight).sp.toPx() }
+                            val charWidthPx = with(density) { settings.fontSize.sp.toPx() * 0.6f }
+                            val charsPerLine = (availableWidthPx / charWidthPx).toInt().coerceAtLeast(1)
+                            val linesPerPage = (availableHeightPx / charHeightPx).toInt().coerceAtLeast(1)
+                            val charsPerPage = (charsPerLine * linesPerPage * 0.85f).toInt()
 
-                        // 确保页码在有效范围内
-                        LaunchedEffect(pages.size) {
-                            if (pages.isNotEmpty() && currentPage >= pages.size) {
-                                currentPage = (pages.size - 1).coerceAtLeast(0)
+                            val pages = remember(paragraphs, charsPerPage) {
+                                val result = mutableListOf<List<String>>()
+                                var currentPageItems = mutableListOf<String>()
+                                var currentChars = 0
+                                for (paragraph in paragraphs) {
+                                    if (currentChars + paragraph.length > charsPerPage && currentPageItems.isNotEmpty()) {
+                                        result.add(currentPageItems.toList())
+                                        currentPageItems = mutableListOf()
+                                        currentChars = 0
+                                    }
+                                    currentPageItems.add(paragraph)
+                                    currentChars += paragraph.length
+                                }
+                                if (currentPageItems.isNotEmpty()) result.add(currentPageItems.toList())
+                                result
                             }
-                        }
 
-                        val displayParagraphs = pages.getOrElse(currentPage) { paragraphs }
+                            // 确保页码在有效范围内
+                            LaunchedEffect(pages.size) {
+                                if (pages.isNotEmpty() && currentPage >= pages.size) {
+                                    currentPage = (pages.size - 1).coerceAtLeast(0)
+                                }
+                            }
 
-                        // 翻页动画
-                        val animatedOffsetX by animateFloatAsState(
-                            targetValue = offsetX,
-                            animationSpec = tween(durationMillis = 200),
-                            label = "pageOffset"
-                        )
-
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            // 内容区域 - 带滑动偏移动画
+                            val displayParagraphs = pages.getOrElse(currentPage) { paragraphs }
+                            // 旧页（动画推出屏幕）
+                            if (previousPageParagraphs.isNotEmpty()) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .graphicsLayer {
+                                            translationX = animatedOldPageX.value
+                                        }
+                                        .padding(16.dp)
+                                ) {
+                                    previousPageParagraphs.forEach { paragraph ->
+                                        Text(
+                                            text = paragraph,
+                                            fontSize = settings.fontSize.sp,
+                                            lineHeight = (settings.fontSize * settings.lineHeight).sp,
+                                            letterSpacing = settings.letterSpacing.sp,
+                                            color = Color(settings.textColor),
+                                            modifier = Modifier.padding(bottom = settings.paragraphSpacing.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            // 新页（手指跟随 + 翻页归位动画）
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .graphicsLayer {
-                                        translationX = animatedOffsetX
+                                        translationX = animatedOffsetX.value
                                     }
                                     .padding(16.dp)
                             ) {
@@ -245,14 +280,52 @@ fun ReaderScreen(
                                                             when {
                                                                 startX < screenWidth / 3 -> {
                                                                     if (currentPage > 0) {
+                                                                        // 点击翻上一页：旧页向右推出，新页从左侧推入
+                                                                        previousPageParagraphs = displayParagraphs
+                                                                        flipDirection = -1
                                                                         currentPage--
                                                                         viewModel.updateReadPosition(currentPage)
+                                                                        launch {
+                                                                            animatedOldPageX.snapTo(0f)
+                                                                            coroutineScope {
+                                                                                launch {
+                                                                                    animatedOldPageX.animateTo(
+                                                                                        screenWidth,
+                                                                                        tween(250)
+                                                                                    )
+                                                                                    previousPageParagraphs = emptyList()
+                                                                                }
+                                                                                launch {
+                                                                                    animatedOffsetX.snapTo(-screenWidth)
+                                                                                    animatedOffsetX.animateTo(0f, tween(250))
+                                                                                }
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                                 startX > screenWidth * 2 / 3 -> {
                                                                     if (currentPage < pages.size - 1) {
+                                                                        // 点击翻下一页：旧页向左推出，新页从右侧推入
+                                                                        previousPageParagraphs = displayParagraphs
+                                                                        flipDirection = 1
                                                                         currentPage++
                                                                         viewModel.updateReadPosition(currentPage)
+                                                                        launch {
+                                                                            animatedOldPageX.snapTo(0f)
+                                                                            coroutineScope {
+                                                                                launch {
+                                                                                    animatedOldPageX.animateTo(
+                                                                                        -screenWidth,
+                                                                                        tween(250)
+                                                                                    )
+                                                                                    previousPageParagraphs = emptyList()
+                                                                                }
+                                                                                launch {
+                                                                                    animatedOffsetX.snapTo(screenWidth)
+                                                                                    animatedOffsetX.animateTo(0f, tween(250))
+                                                                                }
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                                 else -> viewModel.toggleMenu()
@@ -260,18 +333,57 @@ fun ReaderScreen(
                                                         } else {
                                                             // 拖拽结束，根据最终位移量决定是否翻页
                                                             val threshold = size.width / 3f
+                                                            val currentOffset = animatedOffsetX.value
                                                             when {
-                                                                offsetX < -threshold && currentPage < pages.size - 1 -> {
+                                                                currentOffset < -threshold && currentPage < pages.size - 1 -> {
+                                                                    // 左滑翻下一页：旧页继续向左滑出，新页从当前位置归位中央
+                                                                    previousPageParagraphs = displayParagraphs
+                                                                    flipDirection = 1
                                                                     currentPage++
                                                                     viewModel.updateReadPosition(currentPage)
+                                                                    launch {
+                                                                        animatedOldPageX.snapTo(currentOffset)
+                                                                        coroutineScope {
+                                                                            launch {
+                                                                                animatedOldPageX.animateTo(
+                                                                                    -size.width.toFloat(),
+                                                                                    tween(250)
+                                                                                )
+                                                                                previousPageParagraphs = emptyList()
+                                                                            }
+                                                                            launch {
+                                                                                animatedOffsetX.animateTo(0f, tween(250))
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
-                                                                offsetX > threshold && currentPage > 0 -> {
+                                                                currentOffset > threshold && currentPage > 0 -> {
+                                                                    // 右滑翻上一页：旧页继续向右滑出，新页从当前位置归位中央
+                                                                    previousPageParagraphs = displayParagraphs
+                                                                    flipDirection = -1
                                                                     currentPage--
                                                                     viewModel.updateReadPosition(currentPage)
+                                                                    launch {
+                                                                        animatedOldPageX.snapTo(currentOffset)
+                                                                        coroutineScope {
+                                                                            launch {
+                                                                                animatedOldPageX.animateTo(
+                                                                                    size.width.toFloat(),
+                                                                                    tween(250)
+                                                                                )
+                                                                                previousPageParagraphs = emptyList()
+                                                                            }
+                                                                            launch {
+                                                                                animatedOffsetX.animateTo(0f, tween(250))
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
-                                                                // 不满足阈值：offsetX 归零，动画平滑弹回
+                                                                else -> {
+                                                                    // 不满足阈值：弹回中央
+                                                                    launch { animatedOffsetX.animateTo(0f, tween(200)) }
+                                                                }
                                                             }
-                                                            offsetX = 0f
                                                         }
                                                         break
                                                     }
@@ -280,8 +392,14 @@ fun ReaderScreen(
                                                     if (kotlin.math.abs(totalDragX) > 10f) isDrag = true
                                                     if (isDrag) {
                                                         change.consume()
-                                                        offsetX += dragX
-                                                        offsetX = offsetX.coerceIn(-size.width.toFloat(), size.width.toFloat())
+                                                        launch {
+                                                            animatedOffsetX.snapTo(
+                                                                (animatedOffsetX.value + dragX).coerceIn(
+                                                                    -size.width.toFloat(),
+                                                                    size.width.toFloat()
+                                                                )
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }

@@ -12,11 +12,14 @@ import com.novelreader.data.model.PageMode
 import com.novelreader.data.model.ReadingSettings
 import com.novelreader.data.repository.BookRepository
 import com.novelreader.util.ChapterParser
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.RandomAccessFile
 
 class ReaderViewModel(application: Application) : AndroidViewModel(application) {
     private val database = NovelDatabase.getDatabase(application)
@@ -62,6 +65,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     var fullContent: String = ""
         private set
+
+    // 标记全文是否已加载，避免重复读取
+    private var fullContentLoaded = false
 
     /**
      * 从SharedPreferences加载阅读设置
@@ -127,13 +133,23 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 val book = _currentBook.value ?: return@launch
                 val file = File(book.filePath)
                 if (file.exists()) {
-                    fullContent = file.readText(Charsets.UTF_8)
-                    val content = ChapterParser.getChapterContent(fullContent, chapter)
+                    val content = withContext(Dispatchers.IO) {
+                        RandomAccessFile(file, "r").use { raf ->
+                            raf.seek(chapter.startOffset.toLong())
+                            val byteCount = chapter.endOffset - chapter.startOffset
+                            val byteArray = ByteArray(byteCount)
+                            raf.readFully(byteArray)
+                            String(byteArray, Charsets.UTF_8)
+                        }
+                    }
                     _currentChapterContent.value = content
+                    // 章节内容改变，全文缓存失效
+                    fullContent = ""
+                    fullContentLoaded = false
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                _currentChapterContent.value = "加载章节内容失败"
+                _currentChapterContent.value = "章节加载失败"
             }
         }
     }
@@ -202,6 +218,24 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     fun showSearch() {
         _isSearchVisible.value = true
         _isMenuVisible.value = false
+        // 懒加载全文：仅在打开搜索时读取
+        if (!fullContentLoaded) {
+            viewModelScope.launch {
+                try {
+                    val book = _currentBook.value ?: return@launch
+                    val file = File(book.filePath)
+                    if (file.exists()) {
+                        fullContent = withContext(Dispatchers.IO) {
+                            file.readText(Charsets.UTF_8)
+                        }
+                        fullContentLoaded = true
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    fullContent = ""
+                }
+            }
+        }
     }
 
     fun hideSearch() {

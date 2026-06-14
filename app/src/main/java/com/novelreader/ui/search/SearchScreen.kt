@@ -23,6 +23,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novelreader.data.model.ReadingSettings
+import com.novelreader.util.ChapterParser
 
 data class SearchResult(
     val chapterTitle: String,
@@ -62,10 +63,7 @@ fun SearchScreen(
         val keywords = query.trim().split("\\s+".toRegex())
 
         for (chapter in chapters) {
-            val chapterContent = fullContent.substring(
-                chapter.startOffset.coerceAtMost(fullContent.length),
-                chapter.endOffset.coerceAtMost(fullContent.length)
-            )
+            val chapterContent = ChapterParser.chapterContentFromBytes(fullContent, chapter)
 
             val paragraphs = chapterContent.split("\n")
 
