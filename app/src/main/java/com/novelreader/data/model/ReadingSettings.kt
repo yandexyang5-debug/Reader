@@ -14,7 +14,9 @@ data class ReadingSettings(
     val backgroundColor: Long = 0xFFFFFFFF,
     val textColor: Long = 0xFF333333,
     val isNightMode: Boolean = false,
-    val pageMode: PageMode = PageMode.VERTICAL_SCROLL
+    val pageMode: PageMode = PageMode.VERTICAL_SCROLL,
+    val flipAnimation: Boolean = true,
+    val flipSensitivity: Float = 0.33f
 ) {
     companion object {
         // 背景颜色选项

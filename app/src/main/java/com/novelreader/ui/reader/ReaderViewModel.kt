@@ -91,7 +91,9 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             backgroundColor = prefs.getLong("backgroundColor", 0xFFFFFFFF),
             textColor = prefs.getLong("textColor", 0xFF333333),
             isNightMode = prefs.getBoolean("isNightMode", false),
-            pageMode = pageMode
+            pageMode = pageMode,
+            flipAnimation = prefs.getBoolean("flipAnimation", true),
+            flipSensitivity = prefs.getFloat("flipSensitivity", 0.33f)
         )
     }
 
@@ -108,6 +110,8 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             putLong("textColor", settings.textColor)
             putBoolean("isNightMode", settings.isNightMode)
             putInt("pageMode", settings.pageMode.ordinal)
+            putBoolean("flipAnimation", settings.flipAnimation)
+            putFloat("flipSensitivity", settings.flipSensitivity)
             apply()
         }
     }
