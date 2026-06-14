@@ -16,8 +16,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -75,6 +77,23 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _fullContentState = MutableStateFlow<FullContentState>(FullContentState.Idle)
     val fullContentState: StateFlow<FullContentState> = _fullContentState.asStateFlow()
+
+    // === 全文搜索 ===
+    data class SearchResult(
+        val chapterTitle: String,
+        val paragraphText: String,
+        val paragraphIndex: Int
+    )
+
+    private val _searchResults = MutableStateFlow<List<SearchResult>>(emptyList())
+    val searchResults: StateFlow<List<SearchResult>> = _searchResults.asStateFlow()
+
+    private val _isSearching = MutableStateFlow(false)
+    val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
+
+    private var searchJob: Job? = null
+    // 预解析好的章节内容缓存（章节标题 → 段落列表）
+    private var parsedChapters: List<Pair<String, List<String>>>? = null
 
     /**
      * 从SharedPreferences加载阅读设置
@@ -188,6 +207,17 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
+     * 通过章节标题跳转搜索结果
+     */
+    fun goToSearchResult(chapterTitle: String, paragraphIndex: Int) {
+        val chapterList = _chapters.value
+        val chapterIndex = chapterList.indexOfFirst { it.title == chapterTitle }
+        if (chapterIndex >= 0) {
+            goToChapterAndParagraph(chapterIndex, paragraphIndex)
+        }
+    }
+
+    /**
      * 清除段落跳转标记（跳转完成后调用）
      */
     fun clearScrollToParagraph() {
@@ -253,6 +283,80 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
 
     fun hideSearch() {
         _isSearchVisible.value = false
+        searchJob?.cancel()
+        _isSearching.value = false
+        _searchResults.value = emptyList()
+    }
+
+    /**
+     * 预解析章节内容并缓存（IO线程，只执行一次）
+     */
+    private suspend fun ensureParsedChapters(): List<Pair<String, List<String>>> {
+        parsedChapters?.let { return it }
+        val chapters = _chapters.value
+        val content = when (val state = _fullContentState.value) {
+            is FullContentState.Ready -> state.content
+            else -> return emptyList()
+        }
+        return withContext(Dispatchers.Default) {
+            chapters.map { chapter ->
+                val text = ChapterParser.chapterContentFromBytes(content, chapter)
+                val paragraphs = text.split("\n").filter { it.isNotBlank() }
+                chapter.title to paragraphs
+            }.also { parsedChapters = it }
+        }
+    }
+
+    /**
+     * 执行全文搜索（IO线程，支持取消）
+     */
+    fun performSearch(query: String, mode: String) {
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            _searchResults.value = emptyList()
+            _isSearching.value = false
+            return
+        }
+        _isSearching.value = true
+        searchJob = viewModelScope.launch {
+            try {
+                val chapters = ensureParsedChapters()
+                if (chapters.isEmpty()) {
+                    _searchResults.value = emptyList()
+                    return@launch
+                }
+                val keywords = query.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                val results = withContext(Dispatchers.Default) {
+                    val acc = mutableListOf<SearchResult>()
+                    for ((title, paragraphs) in chapters) {
+                        ensureActive()
+                        for ((idx, para) in paragraphs.withIndex()) {
+                            ensureActive()
+                            val matched = when (mode) {
+                                "EXACT", "MULTI" -> keywords.all { para.contains(it, ignoreCase = true) }
+                                "FUZZY" -> {
+                                    var qi = 0
+                                    for (c in para) {
+                                        if (qi < query.length && c == query[qi]) qi++
+                                    }
+                                    qi == query.length
+                                }
+                                else -> false
+                            }
+                            if (matched) {
+                                acc.add(SearchResult(title, para, idx))
+                            }
+                        }
+                    }
+                    acc
+                }
+                _searchResults.value = results
+            } catch (_: Exception) {
+                // 搜索被取消或异常，不更新结果
+            } finally {
+                _isSearching.value = false
+            }
+        }
     }
 
     fun showSettings() {

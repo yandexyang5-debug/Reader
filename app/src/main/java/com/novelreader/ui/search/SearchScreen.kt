@@ -1,143 +1,114 @@
 package com.novelreader.ui.search
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.novelreader.data.model.ReadingSettings
-import com.novelreader.ui.reader.FullContentState
-import com.novelreader.util.ChapterParser
+import com.novelreader.ui.reader.ReaderViewModel
+import com.novelreader.ui.theme.DarkBackground
+import com.novelreader.ui.theme.DarkCardBackground
+import kotlinx.coroutines.delay
 
-data class SearchResult(
-    val chapterTitle: String,
-    val paragraphText: String,
-    val paragraphIndex: Int
-)
-
-enum class SearchMode {
-    EXACT,      // 精确匹配
-    FUZZY,      // 模糊搜索
-    MULTI       // 多关键词
+enum class SearchMode(val label: String) {
+    EXACT("精确"),
+    FUZZY("模糊"),
+    MULTI("多词")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
-    chapters: List<com.novelreader.data.model.Chapter>,
-    fullContentState: FullContentState,
-    onBackClick: () -> Unit,
-    onResultClick: (chapterIndex: Int, paragraphIndex: Int) -> Unit
+    viewModel: ReaderViewModel,
+    onBack: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
-    var searchMode by remember { mutableStateOf(SearchMode.EXACT) }
-    var results by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
-    var isSearching by remember { mutableStateOf(false) }
+    var selectedMode by remember { mutableStateOf(SearchMode.EXACT) }
 
-    // 搜索函数
-    fun performSearch() {
-        if (query.isBlank()) {
-            results = emptyList()
-            return
-        }
-        if (fullContentState !is FullContentState.Ready) return
-        val fullContent = fullContentState.content
+    val searchResults by viewModel.searchResults.collectAsState()
+    val isSearching by viewModel.isSearching.collectAsState()
 
-        isSearching = true
-        results = emptyList()
-
-        val keywords = query.trim().split("\\s+".toRegex())
-
-        for (chapter in chapters) {
-            val chapterContent = ChapterParser.chapterContentFromBytes(fullContent, chapter)
-
-            val paragraphs = chapterContent.split("\n")
-
-            for ((index, paragraph) in paragraphs.withIndex()) {
-                val trimmedParagraph = paragraph.trim()
-                if (trimmedParagraph.isEmpty()) continue
-
-                val isMatch = when (searchMode) {
-                    SearchMode.EXACT -> {
-                        keywords.all { trimmedParagraph.contains(it, ignoreCase = true) }
-                    }
-                    SearchMode.FUZZY -> {
-                        val pattern = query.trim().lowercase()
-                        val text = trimmedParagraph.lowercase()
-                        var patternIndex = 0
-                        for (char in text) {
-                            if (char == pattern[patternIndex]) {
-                                patternIndex++
-                                if (patternIndex >= pattern.length) break
-                            }
-                        }
-                        patternIndex >= pattern.length
-                    }
-                    SearchMode.MULTI -> {
-                        keywords.all { trimmedParagraph.contains(it, ignoreCase = true) }
-                    }
-                }
-
-                if (isMatch) {
-                    results = results + SearchResult(
-                        chapterTitle = chapter.title,
-                        paragraphText = trimmedParagraph,
-                        paragraphIndex = index
-                    )
-                }
-            }
-        }
-
-        isSearching = false
+    // 防抖：query变化后延迟300ms再触发搜索
+    var debouncedQuery by remember { mutableStateOf("") }
+    LaunchedEffect(query) {
+        delay(300)
+        debouncedQuery = query
     }
 
+    // 当防抖后的查询词或搜索模式变化时触发搜索
+    LaunchedEffect(debouncedQuery, selectedMode) {
+        viewModel.performSearch(debouncedQuery, selectedMode.name)
+    }
+
+    // 高亮关键词列表
+    val keywords = debouncedQuery.split("\\s+".toRegex()).filter { it.isNotBlank() }
+
     Scaffold(
+        containerColor = DarkBackground,
         topBar = {
             TopAppBar(
-                title = { Text("全文搜索") },
+                title = { Text("全文搜索", color = MaterialTheme.colorScheme.onPrimary) },
                 navigationIcon = {
-                    IconButton(onClick = onBackClick) {
+                    IconButton(onClick = onBack) {
                         Icon(
-                            imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "返回"
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "返回",
+                            tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
+                    containerColor = DarkBackground
                 )
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = onBackClick,
-                containerColor = MaterialTheme.colorScheme.primaryContainer
-            ) {
-                Icon(
-                    imageVector = Icons.Default.MenuBook,
-                    contentDescription = "返回正文",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
         }
     ) { paddingValues ->
         Column(
@@ -151,125 +122,124 @@ fun SearchScreen(
                 onValueChange = { query = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                placeholder = { Text("输入关键词搜索...") },
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                placeholder = { Text("输入搜索关键词", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "搜索",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
                         IconButton(onClick = { query = "" }) {
                             Icon(
                                 imageVector = Icons.Default.Clear,
-                                contentDescription = "清除"
+                                contentDescription = "清空",
+                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                             )
                         }
                     }
                 },
-                singleLine = true,
-                shape = RoundedCornerShape(8.dp),
-                enabled = fullContentState is FullContentState.Ready
-            )
-
-            // 全文加载状态提示
-            when (fullContentState) {
-                is FullContentState.Loading, is FullContentState.Idle -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("正在加载全文...", color = Color.Gray, fontSize = 14.sp)
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        // 触发即时搜索
+                        debouncedQuery = query
                     }
-                }
-                is FullContentState.Error -> {
-                    Text(
-                        text = "全文加载失败，请退出重试",
-                        color = Color.Red,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(horizontal = 16.dp)
-                    )
-                }
-                is FullContentState.Ready -> { /* 正常显示，无需提示 */ }
-            }
+                ),
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
 
             // 搜索模式选择
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilterChip(
-                    selected = searchMode == SearchMode.EXACT,
-                    onClick = {
-                        searchMode = SearchMode.EXACT
-                        performSearch()
-                    },
-                    label = { Text("精确匹配") }
-                )
-                FilterChip(
-                    selected = searchMode == SearchMode.FUZZY,
-                    onClick = {
-                        searchMode = SearchMode.FUZZY
-                        performSearch()
-                    },
-                    label = { Text("模糊搜索") }
-                )
-                FilterChip(
-                    selected = searchMode == SearchMode.MULTI,
-                    onClick = {
-                        searchMode = SearchMode.MULTI
-                        performSearch()
-                    },
-                    label = { Text("多关键词") }
-                )
+                SearchMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = selectedMode == mode,
+                        onClick = { selectedMode = mode },
+                        label = { Text(mode.label, fontSize = 13.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+                            containerColor = DarkCardBackground,
+                            labelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    )
+                }
             }
 
-            // 搜索按钮
-            Button(
-                onClick = { performSearch() },
+            // 搜索结果统计和加载状态
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                shape = RoundedCornerShape(8.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = null,
-                    modifier = Modifier.padding(end = 8.dp)
-                )
-                Text("搜索")
-            }
-
-            // 搜索结果统计
-            if (results.isNotEmpty()) {
-                Text(
-                    text = "找到 ${results.size} 条结果",
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    color = Color.Gray,
-                    fontSize = 14.sp
-                )
+                if (isSearching) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "正在搜索...",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                } else if (debouncedQuery.isNotBlank()) {
+                    Text(
+                        text = "找到 ${searchResults.size} 条结果",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
             }
 
             // 搜索结果列表
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(results) { result ->
-                    SearchResultCard(
-                        result = result,
-                        query = query,
-                        onClick = {
-                            // 找到章节索引
-                            val chapterIndex = chapters.indexOfFirst { it.title == result.chapterTitle }
-                            if (chapterIndex >= 0) {
-                                onResultClick(chapterIndex, result.paragraphIndex)
-                            }
+            if (debouncedQuery.isNotBlank() && !isSearching) {
+                if (searchResults.isEmpty()) {
+                    // 空状态
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "未找到相关结果",
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        itemsIndexed(
+                            items = searchResults,
+                            key = { index, item -> "${item.chapterTitle}_${item.paragraphIndex}_$index" }
+                        ) { _, result ->
+                            SearchResultCard(
+                                chapterTitle = result.chapterTitle,
+                                paragraphText = result.paragraphText,
+                                keywords = keywords,
+                                onClick = {
+                                    viewModel.goToSearchResult(result.chapterTitle, result.paragraphIndex)
+                                    onBack()
+                                }
+                            )
                         }
-                    )
+                    }
                 }
             }
         }
@@ -277,69 +247,89 @@ fun SearchScreen(
 }
 
 @Composable
-fun SearchResultCard(
-    result: SearchResult,
-    query: String,
+private fun SearchResultCard(
+    chapterTitle: String,
+    paragraphText: String,
+    keywords: List<String>,
     onClick: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() },
-        shape = RoundedCornerShape(8.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = DarkCardBackground
+        ),
+        shape = RoundedCornerShape(12.dp)
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp)
+            modifier = Modifier.padding(12.dp)
         ) {
             // 章节标题
             Text(
-                text = result.chapterTitle,
+                text = chapterTitle,
                 fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(ReadingSettings.PRIMARY)
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
-            // 匹配的文本（高亮显示关键词）
-            val annotatedString = buildAnnotatedString {
-                val text = result.paragraphText
-                val keywords = query.trim().split("\\s+".toRegex())
-
-                var lastIndex = 0
-                for (keyword in keywords) {
-                    val startIndex = text.indexOf(keyword, ignoreCase = true, startIndex = lastIndex)
-                    if (startIndex >= 0) {
-                        // 添加关键词前的文本
-                        if (startIndex > lastIndex) {
-                            append(text.substring(lastIndex, startIndex))
-                        }
-                        // 添加高亮的关键词
-                        withStyle(
-                            style = SpanStyle(
-                                background = Color.Yellow,
-                                fontWeight = FontWeight.Bold
-                            )
-                        ) {
-                            append(text.substring(startIndex, startIndex + keyword.length))
-                        }
-                        lastIndex = startIndex + keyword.length
-                    }
-                }
-                // 添加剩余文本
-                if (lastIndex < text.length) {
-                    append(text.substring(lastIndex))
-                }
-            }
-
+            // 匹配段落（高亮关键词）
             Text(
-                text = annotatedString,
+                text = buildAnnotatedString {
+                    if (keywords.isEmpty()) {
+                        append(paragraphText)
+                    } else {
+                        var lastIndex = 0
+                        val lowerText = paragraphText.lowercase()
+                        val lowerKeywords = keywords.map { it.lowercase() }
+
+                        while (lastIndex < paragraphText.length) {
+                            var earliestIndex = Int.MAX_VALUE
+                            var matchedKeyword = ""
+
+                            for ((i, lowerKeyword) in lowerKeywords.withIndex()) {
+                                val index = lowerText.indexOf(lowerKeyword, lastIndex)
+                                if (index != -1 && index < earliestIndex) {
+                                    earliestIndex = index
+                                    matchedKeyword = keywords[i] // 用原始大小写
+                                }
+                            }
+
+                            if (earliestIndex == Int.MAX_VALUE) {
+                                // 没有更多匹配
+                                append(paragraphText.substring(lastIndex))
+                                break
+                            }
+
+                            // 匹配前的文本
+                            if (earliestIndex > lastIndex) {
+                                append(paragraphText.substring(lastIndex, earliestIndex))
+                            }
+
+                            // 高亮匹配的文本
+                            withStyle(
+                                SpanStyle(
+                                    background = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            ) {
+                                append(paragraphText.substring(earliestIndex, earliestIndex + matchedKeyword.length))
+                            }
+
+                            lastIndex = earliestIndex + matchedKeyword.length
+                        }
+                    }
+                },
                 fontSize = 14.sp,
+                lineHeight = 20.sp,
                 maxLines = 3,
-                color = Color.Gray
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
             )
         }
     }
