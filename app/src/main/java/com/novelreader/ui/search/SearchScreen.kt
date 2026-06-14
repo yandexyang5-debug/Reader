@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.novelreader.ui.reader.FullContentState
 import com.novelreader.ui.reader.ReaderViewModel
 import kotlinx.coroutines.delay
 
@@ -73,6 +74,8 @@ fun SearchScreen(
 
     val searchResults by viewModel.searchResults.collectAsState()
     val isSearching by viewModel.isSearching.collectAsState()
+    val searchProgress by viewModel.searchProgress.collectAsState()
+    val fullContentState by viewModel.fullContentState.collectAsState()
 
     // 防抖：query变化后延迟300ms再触发搜索
     var debouncedQuery by remember { mutableStateOf("") }
@@ -81,9 +84,11 @@ fun SearchScreen(
         debouncedQuery = query
     }
 
-    // 当防抖后的查询词或搜索模式变化时触发搜索
-    LaunchedEffect(debouncedQuery, selectedMode) {
-        viewModel.performSearch(debouncedQuery, selectedMode.name)
+    // 当防抖后的查询词或搜索模式变化时触发搜索（仅在内容就绪时）
+    LaunchedEffect(debouncedQuery, selectedMode, fullContentState) {
+        if (fullContentState is FullContentState.Ready) {
+            viewModel.performSearch(debouncedQuery, selectedMode.name)
+        }
     }
 
     // 高亮关键词列表
@@ -188,7 +193,7 @@ fun SearchScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "正在搜索...",
+                        text = if (searchProgress > 0) "搜索中… $searchProgress%" else "搜索中…",
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
@@ -201,8 +206,40 @@ fun SearchScreen(
                 }
             }
 
-            // 搜索结果列表
-            if (debouncedQuery.isNotBlank() && !isSearching) {
+            // 全文加载状态
+            if (fullContentState is FullContentState.Loading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "正在加载全文内容…",
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+            } else if (fullContentState is FullContentState.Error) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "全文内容加载失败，请返回重试",
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            } else if (debouncedQuery.isNotBlank() && !isSearching) {
                 if (searchResults.isEmpty()) {
                     // 空状态
                     Box(
@@ -229,7 +266,7 @@ fun SearchScreen(
                         ) { _, result ->
                             SearchResultCard(
                                 chapterTitle = result.chapterTitle,
-                                paragraphText = result.paragraphText,
+                                displayText = result.excerpt.ifEmpty { result.paragraphText.take(100) },
                                 keywords = keywords,
                                 onClick = {
                                     viewModel.goToSearchResult(result.chapterTitle, result.paragraphIndex)
@@ -247,7 +284,7 @@ fun SearchScreen(
 @Composable
 private fun SearchResultCard(
     chapterTitle: String,
-    paragraphText: String,
+    displayText: String,
     keywords: List<String>,
     onClick: () -> Unit
 ) {
@@ -279,13 +316,13 @@ private fun SearchResultCard(
             Text(
                 text = buildAnnotatedString {
                     if (keywords.isEmpty()) {
-                        append(paragraphText)
+                        append(displayText)
                     } else {
                         var lastIndex = 0
-                        val lowerText = paragraphText.lowercase()
+                        val lowerText = displayText.lowercase()
                         val lowerKeywords = keywords.map { it.lowercase() }
 
-                        while (lastIndex < paragraphText.length) {
+                        while (lastIndex < displayText.length) {
                             var earliestIndex = Int.MAX_VALUE
                             var matchedKeyword = ""
 
@@ -299,13 +336,13 @@ private fun SearchResultCard(
 
                             if (earliestIndex == Int.MAX_VALUE) {
                                 // 没有更多匹配
-                                append(paragraphText.substring(lastIndex))
+                                append(displayText.substring(lastIndex))
                                 break
                             }
 
                             // 匹配前的文本
                             if (earliestIndex > lastIndex) {
-                                append(paragraphText.substring(lastIndex, earliestIndex))
+                                append(displayText.substring(lastIndex, earliestIndex))
                             }
 
                             // 高亮匹配的文本
@@ -316,7 +353,7 @@ private fun SearchResultCard(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             ) {
-                                append(paragraphText.substring(earliestIndex, earliestIndex + matchedKeyword.length))
+                                append(displayText.substring(earliestIndex, earliestIndex + matchedKeyword.length))
                             }
 
                             lastIndex = earliestIndex + matchedKeyword.length

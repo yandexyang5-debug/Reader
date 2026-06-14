@@ -81,8 +81,10 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     // === 全文搜索 ===
     data class SearchResult(
         val chapterTitle: String,
-        val paragraphText: String,
-        val paragraphIndex: Int
+        val paragraphText: String,      // 段落全文（用于跳转定位）
+        val paragraphIndex: Int,
+        val excerpt: String = "",        // 摘录（匹配位置附近文字，用于列表显示）
+        val matchPosition: Int = -1      // 匹配在段落中的起始位置
     )
 
     private val _searchResults = MutableStateFlow<List<SearchResult>>(emptyList())
@@ -91,9 +93,18 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     private val _isSearching = MutableStateFlow(false)
     val isSearching: StateFlow<Boolean> = _isSearching.asStateFlow()
 
+    private val _searchProgress = MutableStateFlow(0)
+    val searchProgress: StateFlow<Int> = _searchProgress.asStateFlow()
+
     private var searchJob: Job? = null
-    // 预解析好的章节内容缓存（章节标题 → 段落列表）
-    private var parsedChapters: List<Pair<String, List<String>>>? = null
+
+    // 预解析章节缓存：标题 + 原始段落 + lowercase 段落（避免搜索时重复 lowercase）
+    private data class ParsedChapter(
+        val title: String,
+        val paragraphs: List<String>,
+        val lowerParagraphs: List<String>
+    )
+    private var parsedChapters: List<ParsedChapter>? = null
 
     /**
      * 从SharedPreferences加载阅读设置
@@ -175,6 +186,7 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     _currentChapterContent.value = content
                     // 章节内容改变，全文缓存失效
                     _fullContentState.value = FullContentState.Idle
+                    parsedChapters = null
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -289,9 +301,12 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /**
-     * 预解析章节内容并缓存（IO线程，只执行一次）
+     * 预解析章节内容并缓存（只执行一次）
+     * 优化：
+     * 1. 单次遍历计算所有章节的字符偏移（替代每章单独 byte→char 遍历）
+     * 2. 预缓存 lowercase 段落（搜索时零转换开销）
      */
-    private suspend fun ensureParsedChapters(): List<Pair<String, List<String>>> {
+    private suspend fun ensureParsedChapters(): List<ParsedChapter> {
         parsedChapters?.let { return it }
         val chapters = _chapters.value
         val content = when (val state = _fullContentState.value) {
@@ -299,25 +314,60 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
             else -> return emptyList()
         }
         return withContext(Dispatchers.Default) {
-            chapters.map { chapter ->
-                val text = ChapterParser.chapterContentFromBytes(content, chapter)
+            // 单次遍历：计算每个章节在字符串中的起止字符索引
+            val charStarts = IntArray(chapters.size)
+            val charEnds = IntArray(chapters.size)
+            var bytePos = 0
+            var charIdx = 0
+            var chapterIdx = 0
+            val sortedChapters = chapters.sortedBy { it.startOffset }
+            // 记录每个章节的起始字符位置
+            for ((i, ch) in sortedChapters.withIndex()) {
+                while (bytePos < ch.startOffset && charIdx < content.length) {
+                    bytePos += content[charIdx].toString().toByteArray(Charsets.UTF_8).size
+                    charIdx++
+                }
+                charStarts[i] = charIdx
+            }
+            // 记录每个章节的结束字符位置
+            bytePos = 0
+            charIdx = 0
+            for ((i, ch) in sortedChapters.withIndex()) {
+                while (bytePos < ch.endOffset && charIdx < content.length) {
+                    bytePos += content[charIdx].toString().toByteArray(Charsets.UTF_8).size
+                    charIdx++
+                }
+                charEnds[i] = charIdx
+            }
+            // 提取章节文本并预解析段落 + lowercase
+            sortedChapters.mapIndexed { i, chapter ->
+                val start = charStarts[i]
+                val end = minOf(charEnds[i], content.length)
+                val text = if (start < end) content.substring(start, end) else ""
                 val paragraphs = text.split("\n").filter { it.isNotBlank() }
-                chapter.title to paragraphs
+                val lowerParagraphs = paragraphs.map { it.lowercase() }
+                ParsedChapter(chapter.title, paragraphs, lowerParagraphs)
             }.also { parsedChapters = it }
         }
     }
 
     /**
-     * 执行全文搜索（IO线程，支持取消）
+     * 执行全文搜索（Dispatchers.Default，支持取消 + 进度反馈）
+     * 优化：
+     * 1. 使用预缓存的 lowercase 段落，零转换开销
+     * 2. 每 50 个段落检查一次取消（减少 ensureActive 开销）
+     * 3. 搜索模式与HTML版一致
      */
     fun performSearch(query: String, mode: String) {
         searchJob?.cancel()
         if (query.isBlank()) {
             _searchResults.value = emptyList()
             _isSearching.value = false
+            _searchProgress.value = 0
             return
         }
         _isSearching.value = true
+        _searchProgress.value = 0
         searchJob = viewModelScope.launch {
             try {
                 val chapters = ensureParsedChapters()
@@ -325,27 +375,43 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                     _searchResults.value = emptyList()
                     return@launch
                 }
-                val keywords = query.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                val keywordsLower = if (mode == "MULTI") {
+                    query.split("\\s+".toRegex()).filter { it.isNotBlank() }.map { it.lowercase() }
+                } else {
+                    listOf(query.lowercase())
+                }
+                val queryLower = query.lowercase()
+                val totalChapters = chapters.size
+                var paraCount = 0
+
                 val results = withContext(Dispatchers.Default) {
                     val acc = mutableListOf<SearchResult>()
-                    for ((title, paragraphs) in chapters) {
-                        ensureActive()
-                        for ((idx, para) in paragraphs.withIndex()) {
-                            ensureActive()
+                    for ((ci, chapter) in chapters.withIndex()) {
+                        val paragraphs = chapter.paragraphs
+                        val lowers = chapter.lowerParagraphs
+                        for (idx in paragraphs.indices) {
+                            // 每 50 个段落检查一次取消，减少开销
+                            if (++paraCount % 50 == 0) ensureActive()
+                            val paraLower = lowers[idx]
                             val matched = when (mode) {
-                                "EXACT", "MULTI" -> keywords.all { para.contains(it, ignoreCase = true) }
-                                "FUZZY" -> {
-                                    var qi = 0
-                                    for (c in para) {
-                                        if (qi < query.length && c == query[qi]) qi++
-                                    }
-                                    qi == query.length
-                                }
+                                "EXACT" -> paraLower.contains(queryLower)
+                                "MULTI" -> keywordsLower.all { paraLower.contains(it) }
+                                "FUZZY" -> fuzzyMatch(paraLower, queryLower)
                                 else -> false
                             }
                             if (matched) {
-                                acc.add(SearchResult(title, para, idx))
+                                val para = paragraphs[idx]
+                                val pos = when (mode) {
+                                    "EXACT", "MULTI" -> paraLower.indexOf(queryLower)
+                                    "FUZZY" -> findFuzzyPosition(paraLower, queryLower)
+                                    else -> -1
+                                }
+                                acc.add(SearchResult(chapter.title, para, idx, buildExcerpt(para, pos, query.length), pos))
                             }
+                        }
+                        // 每 5 个章节更新进度
+                        if (ci % 5 == 0 || ci == totalChapters - 1) {
+                            _searchProgress.value = (ci + 1) * 100 / totalChapters
                         }
                     }
                     acc
@@ -355,8 +421,40 @@ class ReaderViewModel(application: Application) : AndroidViewModel(application) 
                 // 搜索被取消或异常，不更新结果
             } finally {
                 _isSearching.value = false
+                _searchProgress.value = 100
             }
         }
+    }
+
+    /** 模糊匹配：每个字符按顺序都能找到（大小写不敏感） */
+    private fun fuzzyMatch(text: String, pattern: String): Boolean {
+        var pi = 0
+        for (c in text) {
+            if (pi < pattern.length && c == pattern[pi]) pi++
+        }
+        return pi == pattern.length
+    }
+
+    /** 找到模糊匹配的起始位置 */
+    private fun findFuzzyPosition(text: String, pattern: String): Int {
+        var pi = 0
+        for ((i, c) in text.withIndex()) {
+            if (c == pattern[pi]) {
+                if (pi == 0) return i
+                pi++
+            }
+        }
+        return -1
+    }
+
+    /** 生成匹配位置附近的摘录（前40字符 + 后60字符） */
+    private fun buildExcerpt(text: String, pos: Int, keywordLen: Int): String {
+        if (pos < 0) return text.take(100) + if (text.length > 100) "…" else ""
+        val start = maxOf(0, pos - 40)
+        val end = minOf(text.length, pos + keywordLen + 60)
+        val prefix = if (start > 0) "…" else ""
+        val suffix = if (end < text.length) "…" else ""
+        return prefix + text.substring(start, end) + suffix
     }
 
     fun showSettings() {
